@@ -1,0 +1,195 @@
+(() => {
+  'use strict';
+  const $ = (s) => document.querySelector(s);
+  const el = (tag, attrs = {}, ...kids) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v; else n.setAttribute(k, v);
+    }
+    for (const k of kids) if (k != null) n.append(k instanceof Node ? k : document.createTextNode(String(k)));
+    return n;
+  };
+  const NAMES = { mx: 'MX', spf: 'SPF', dmarc: 'DMARC', dkim: 'DKIM', bimi: 'BIMI', mtaSts: 'MTA-STS', tlsRpt: 'TLS-RPT' };
+  const ORDER = ['mx', 'spf', 'dkim', 'dmarc', 'bimi', 'mtaSts', 'tlsRpt'];
+  const form = $('#check-form');
+  const out = $('#results');
+  const btn = $('#go');
+
+  const mcpCfg = $('#mcp-config');
+  if (mcpCfg) mcpCfg.textContent = JSON.stringify({ mcpServers: { dnsguard: { type: 'http', url: `${location.origin}/mcp` } } }, null, 2);
+  const curl = $('#curl-example');
+  if (curl) curl.textContent = `curl "${location.origin}/api/check?domain=example.com"\ncurl "${location.origin}/api/check?domain=yourdomain.com&selector=s1"`;
+  const curlKey = $('#curl-key-example');
+  if (curlKey) curlKey.textContent = `curl -H "Authorization: Bearer dg_live_YOUR_KEY" \\\n  "${location.origin}/api/check?domain=example.com"`;
+
+  // Show raw key once after Google OAuth redirect (/#api-key=...)
+  (function showMintedKey() {
+    const hash = location.hash || '';
+    const m = hash.match(/^#api-key(-rotated)?=(.+)$/);
+    const box = $('#minted-key');
+    const val = $('#minted-key-value');
+    if (!m || !box || !val) return;
+    let key = m[2];
+    if (m[1]) { const t = $('#minted-key-title'); if (t) t.textContent = 'Key rotated. Copy your NEW API key now; your old key stops working within about a minute'; }
+    try { key = decodeURIComponent(key); } catch (_) {}
+    if (!/^dg_live_[a-f0-9]{64}$/i.test(key)) return;
+    val.textContent = key;
+    box.hidden = false;
+    history.replaceState(null, '', location.pathname + location.search + '#api-key');
+    box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  })();
+
+  // Honest Google sign-in availability (secrets server-side)
+  (async function authStatus() {
+    const status = $('#api-key-status');
+    const btn = $('#google-signin');
+    if (!status) return;
+    try {
+      const res = await fetch('/api/auth/status', { headers: { accept: 'application/json' } });
+      const j = await res.json();
+      if (j && j.google) {
+        status.textContent = `Google sign-in is ready. Free tier: about ${j.limits.freePerMin} checks/min and ${j.limits.freePerDay.toLocaleString()}/day per key.`;
+        if (btn) btn.textContent = 'Continue with Google';
+      } else {
+        status.textContent = 'Sign-in coming soon; API key auth is live for issued keys. Google OAuth client is not configured yet — the button returns a clear “not configured” message until then.';
+        if (btn) btn.textContent = 'Continue with Google (coming soon)';
+      }
+    } catch (_) {
+      status.textContent = 'Sign-in coming soon; API key auth is documented below for developers.';
+    }
+  })();
+
+  function recordBox(label, value) {
+    if (!value) return null;
+    return el('div', {}, el('div', { class: 'small', text: label }), el('div', { class: 'rec', text: value }));
+  }
+
+  function renderCheck(key, c) {
+    const d = el('details', { class: 'item' });
+    if (c.status === 'fail' || c.status === 'warn') d.open = true;
+    d.append(el('summary', {},
+      el('span', { class: 'name', text: NAMES[key] }),
+      el('span', { class: `badge b-${c.status}`, text: c.status }),
+      el('span', { class: 'pts', text: c.bonus ? `+${c.score} / ${c.maxScore} bonus` : `${c.score} / ${c.maxScore} pts` })));
+    const body = el('div', { class: 'body' });
+    const ul = el('ul');
+    for (const f of c.findings || []) ul.append(el('li', { class: `l-${f.level}`, text: f.message }));
+    body.append(ul);
+    if (key === 'mx' && c.records && c.records.length) body.append(recordBox('MX records', c.records.map((r) => `${r.priority} ${r.exchange}`).join('\n')));
+    if (key === 'spf') body.append(recordBox(c.records && c.records.length > 1 ? 'SPF records' : 'SPF record', (c.records || []).join('\n')));
+    if (key === 'dmarc') body.append(recordBox(`DMARC record (${c.lookedUp})`, c.record));
+    if (key === 'dkim') {
+      if (c.keys && c.keys.length) {
+        const box = el('div', { class: 'rec keys' });
+        c.keys.forEach((k, i) => {
+          if (i) box.append('\n');
+          box.append(`${k.name}: `, el('span', { class: 'nw', text: k.revoked ? 'revoked' : `${k.keyType}${k.keyBits ? ` ${k.keyBits}-bit` : ''}` }));
+        });
+        body.append(el('div', {}, el('div', { class: 'small', text: 'Keys found' }), box));
+      }
+      if (c.selectorsChecked) body.append(el('p', { class: 'small', text: `Selectors checked: ${c.selectorsChecked.join(', ')}` }));
+    }
+    if (key === 'bimi') body.append(recordBox(`BIMI record (${c.lookedUp || ''})`, c.record));
+    if (key === 'mtaSts') {
+      body.append(recordBox(`MTA-STS record (${c.lookedUp || ''})`, c.record));
+      if (c.policyFetch && c.policyFetch.ok) {
+        const lines = [];
+        if (c.mode) lines.push(`mode: ${c.mode}`);
+        for (const m of c.mxPatterns || []) lines.push(`mx: ${m}`);
+        if (c.maxAge != null) lines.push(`max_age: ${c.maxAge}`);
+        body.append(recordBox(`Policy (${c.policyUrl || ''})`, lines.join('\n')));
+      }
+    }
+    if (key === 'tlsRpt') body.append(recordBox(`TLS-RPT record (${c.lookedUp || ''})`, c.record));
+    for (const r of c.recommendations || []) body.append(el('div', { class: 'fix' }, el('strong', { text: 'Fix: ' }), r));
+    d.append(body);
+    return d;
+  }
+
+  function render(r) {
+    out.replaceChildren();
+    const s = el('div', { class: 'summary' },
+      el('div', { class: `gradebox g-${r.grade}` }, el('span', { class: 'g', text: r.grade }), el('span', { class: 's', text: `${r.score}/100` })),
+      el('div', {}, el('h2', { text: r.domain }),
+        el('div', { class: 'meta', text: `Checked ${new Date(r.checkedAt).toLocaleString()} · ${r.meta.dnsQueries} DNS queries · ${r.meta.durationMs} ms` }),
+        r.scoreBreakdown && r.scoreBreakdown.bonus ? el('div', { class: 'meta', text: `Includes +${r.scoreBreakdown.bonus} transport-security bonus (MTA-STS / TLS-RPT); core checks ${r.scoreBreakdown.base}/100, total capped at 100.` }) : null,
+        el('a', { href: `/api/check?domain=${encodeURIComponent(r.domain)}${r.checks.dkim.userSelector ? `&selector=${encodeURIComponent(r.checks.dkim.userSelector)}` : ''}`, target: '_blank', rel: 'noopener', class: 'small', text: 'View JSON' })));
+    out.append(s);
+    for (const n of r.notes || []) out.append(el('div', { class: 'note', text: n }));
+    for (const k of ORDER) if (r.checks[k]) out.append(renderCheck(k, r.checks[k]));
+  }
+
+  async function run(domain, selector) {
+    out.hidden = false;
+    out.replaceChildren(el('p', {}, el('span', { class: 'spinner' }), `Checking ${domain}…`));
+    btn.disabled = true;
+    const qs = new URLSearchParams({ domain });
+    if (selector) qs.set('selector', selector);
+    try {
+      const res = await fetch(`/api/check?${qs}`, { headers: { accept: 'application/json' } });
+      const j = await res.json().catch(() => null);
+      if (!res.ok || !j || j.error) throw new Error((j && j.error && j.error.message) || `Request failed (HTTP ${res.status}).`);
+      render(j);
+      history.replaceState(null, '', `/?${qs}`);
+    } catch (e) {
+      out.replaceChildren(el('div', { class: 'err', text: e.message || 'Something went wrong. Please try again.' }));
+    } finally {
+      btn.disabled = false;
+      out.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const d = $('#domain').value.trim();
+    if (!d) { $('#domain').focus(); return; }
+    run(d, $('#selector').value.trim());
+  });
+  document.querySelectorAll('[data-example]').forEach((a) => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    $('#domain').value = a.dataset.example;
+    run(a.dataset.example, '');
+  }));
+  const p = new URLSearchParams(location.search);
+  if (p.get('domain')) {
+    $('#domain').value = p.get('domain');
+    if (p.get('selector')) { $('#selector').value = p.get('selector'); $('.adv').open = true; }
+    run(p.get('domain'), p.get('selector') || '');
+  }
+
+  const wl = $('#waitlist-form');
+  const msg = $('#waitlist-msg');
+  wl.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(wl);
+    const email = String(fd.get('email') || '').trim();
+    if (!/^\S+@\S+\.\S+$/.test(email)) { msg.textContent = 'Please enter a valid email address.'; return; }
+    msg.textContent = 'Saving…';
+    try {
+      const res = await fetch('/api/waitlist', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.fromEntries(fd)) });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((j.error && j.error.message) || 'Could not join the waitlist right now.');
+      msg.textContent = j.message || "You're on the list.";
+      wl.reset();
+    } catch (err) { msg.textContent = err.message; }
+  });
+
+  const rm = $('#remove-form');
+  const rmMsg = $('#remove-msg');
+  if (location.hash === '#remove') $('#remove').open = true;
+  document.querySelectorAll('a[href="#remove"]').forEach((a) => a.addEventListener('click', () => { $('#remove').open = true; }));
+  rm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(rm);
+    const email = String(fd.get('email') || '').trim();
+    if (!/^\S+@\S+\.\S+$/.test(email)) { rmMsg.textContent = 'Please enter a valid email address.'; return; }
+    rmMsg.textContent = 'Removing…';
+    try {
+      const res = await fetch('/api/waitlist/remove', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(Object.fromEntries(fd)) });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((j.error && j.error.message) || 'Could not process the request right now.');
+      rmMsg.textContent = j.message;
+      rm.reset();
+    } catch (err) { rmMsg.textContent = err.message; }
+  });
+})();

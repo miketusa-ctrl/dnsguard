@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DnsGuard – Free SPF, DKIM, DMARC, BIMI &amp; MX checker</title>
+<meta name="description" content="Check your domain's email authentication in seconds: SPF, DKIM, DMARC, BIMI, MX, MTA-STS and TLS-RPT, with a 0–100 score, plain-English fixes, and a free JSON API.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
+<link rel="service-desc" type="application/json" href="/openapi.json" title="OpenAPI 3.1">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="wrap nav">
+    <a class="brand" href="/"><svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#0f766e"/><path d="M16 6l8 3v6c0 5-3.4 9.4-8 11-4.6-1.6-8-6-8-11V9z" fill="#fff"/></svg> DnsGuard</a>
+    <nav><a href="#records">Records</a><a href="/guides">Guides</a><a href="#api">API</a><a href="#pro">Pro</a><a href="#privacy">Privacy</a></nav>
+  </div>
+</header>
+
+<main>
+<section class="hero">
+  <div class="wrap">
+    <h1>Is your domain's email set up correctly?</h1>
+    <p class="lead">Free check of SPF, DKIM, DMARC, BIMI and MX records, plus MTA-STS and TLS-RPT. Get a 0–100 score and plain-English fixes. No sign-up.</p>
+    <form id="check-form" class="check" autocomplete="off" novalidate>
+      <label for="domain" class="sr">Domain</label>
+      <input id="domain" name="domain" type="text" inputmode="url" placeholder="example.com" spellcheck="false" autocapitalize="off" required maxlength="253">
+      <button type="submit" id="go">Check domain</button>
+      <details class="adv"><summary>Advanced: DKIM selector</summary>
+        <label for="selector">Your DKIM selector (optional; the <code>s=</code> value in a DKIM-Signature header)</label>
+        <input id="selector" name="selector" type="text" placeholder="e.g. s2024" spellcheck="false" autocapitalize="off" maxlength="120">
+      </details>
+    </form>
+    <p class="hint">Examples: <a href="/?domain=github.com" data-example="github.com">github.com</a> · <a href="/?domain=paypal.com" data-example="paypal.com">paypal.com</a> · <a href="/?domain=example.com" data-example="example.com">example.com</a></p>
+  </div>
+</section>
+
+<section id="results" class="wrap results" hidden aria-live="polite"></section>
+
+<section id="records" class="wrap">
+  <h2>What each record does</h2>
+  <div class="grid">
+    <article class="card"><h3>MX</h3><p>Mail exchanger records tell other servers where to deliver email for your domain. A domain that never handles mail can publish a “null MX” (<code>0 .</code>) to say so.</p></article>
+    <article class="card"><h3>SPF</h3><p>A TXT record listing the servers allowed to send mail for your domain, ending in <code>-all</code> or <code>~all</code>. Receivers may follow at most <strong>10 DNS lookups</strong> (include, a, mx, exists, redirect); go over and SPF returns a permanent error (permerror), which most receivers treat as a fail. <a href="/guides/spf">SPF guide</a> · <a href="/guides/spf/generator">SPF generator</a></p></article>
+    <article class="card"><h3>DKIM</h3><p>Your mail server signs each message; receivers verify the signature with a public key published at <code>&lt;selector&gt;._domainkey.yourdomain</code>. Selectors can't be listed via DNS, so we try common ones, plus provider-specific ones when your MX or SPF points to a known mail service (for example Microsoft 365, SendGrid, Mailchimp, Mailgun, Zendesk). You can also enter your own. <a href="/guides/dkim">DKIM guide</a></p></article>
+    <article class="card"><h3>DMARC</h3><p>Published at <code>_dmarc.yourdomain</code>. It tells receivers what to do when SPF and DKIM don't align with the visible From address: <code>p=none</code> (monitor), <code>quarantine</code> (spam folder) or <code>reject</code>. It also sets where reports go (<code>rua</code>). <a href="/guides/dmarc">DMARC guide</a> · <a href="/guides/dmarc/generator">DMARC generator</a></p></article>
+    <article class="card"><h3>BIMI</h3><p>Optional. Lets supporting inboxes show your logo. Published at <code>default._bimi.yourdomain</code> with an SVG logo (<code>l=</code>) and usually a VMC/CMC certificate (<code>a=</code>). It requires DMARC at <code>quarantine</code> or <code>reject</code>. <a href="/guides/bimi">BIMI guide</a></p></article>
+    <article class="card"><h3>MTA-STS</h3><p>Optional. Tells other mail servers to deliver to you only over encrypted, certificate-checked TLS. A TXT record at <code>_mta-sts.yourdomain</code> (<code>v=STSv1; id=…</code>) points to a policy file at <code>https://mta-sts.yourdomain/.well-known/mta-sts.txt</code> with a mode (<code>testing</code> or <code>enforce</code>), your allowed MX hosts and a <code>max_age</code>. <a href="/guides/mta-sts">MTA-STS guide</a></p></article>
+    <article class="card"><h3>TLS-RPT</h3><p>Optional. A TXT record at <code>_smtp._tls.yourdomain</code> (<code>v=TLSRPTv1; rua=mailto:…</code>) that asks sending servers for daily reports about TLS problems delivering to you. Pairs with MTA-STS. <a href="/guides/mta-sts">TLS-RPT guide</a></p></article>
+    <article class="card"><h3>How scoring works</h3><p>MX 10 · SPF 25 · DMARC 30 · DKIM 25 · BIMI 10 = 100 points. MTA-STS (up to 3) and TLS-RPT (up to 2) add up to 5 bonus points, and the total is capped at 100, so a missing optional record never lowers your score. Bonus points apply only when SPF passes and DMARC is at quarantine or reject. Grades: A ≥ 90, B ≥ 80, C ≥ 70, D ≥ 60, otherwise F. The score covers only what's visible in public DNS (plus the MTA-STS policy file).</p></article>
+  </div>
+</section>
+
+<section id="api" class="wrap">
+  <h2>Free JSON API</h2>
+  <p class="small">Using an AI assistant or agent? DnsGuard is also a remote MCP server: see <a href="#agents">For AI agents</a>.</p>
+  <p>No key needed. CORS is enabled, so you can call it from a browser. Please keep it to a reasonable volume: requests are rate-limited per IP (about 20 checks/min), and results are cached for 2 minutes. DnsGuard is free to run only up to a point, so all anonymous visitors together share about 5,000 checks per UTC day; if that runs out you'll get a clear message, and a free API key still works.</p>
+  <h3>Endpoint</h3>
+  <pre><code>GET /api/check?domain=&lt;domain&gt;[&amp;selector=&lt;dkim-selector&gt;]</code></pre>
+  <h3>Example</h3>
+  <pre><code id="curl-example">curl "https://YOUR-HOST/api/check?domain=example.com"</code></pre>
+  <h3>Response (abridged)</h3>
+<pre><code>{
+  "domain": "example.com",
+  "score": 95, "maxScore": 100, "grade": "A",
+  "scoreBreakdown": { "base": 93, "bonus": 2, "bonusMax": 5, "cap": 100 },
+  "checks": {
+    "mx":    { "status": "pass", "score": 10, "maxScore": 10, "records": [...], "findings": [...], "recommendations": [...] },
+    "spf":   { "status": "pass", "record": "v=spf1 -all", "lookupCount": 0, "lookupLimit": 10, ... },
+    "dmarc": { "status": "warn", "policy": "reject", "pct": 100, "rua": [], "alignment": {...}, ... },
+    "dkim":  { "status": "info", "selectorsChecked": [...], "keys": [...], ... },
+    "bimi":  { "status": "info", "logoUrl": null, "vmcUrl": null, ... },
+    "mtaSts": { "status": "info", "score": 0, "maxScore": 3, "bonus": true, "record": null, "mode": null, "mxPatterns": [], "maxAge": null, ... },
+    "tlsRpt": { "status": "pass", "score": 2, "maxScore": 2, "bonus": true, "record": "v=TLSRPTv1; rua=mailto:tls@example.com", "rua": [...], ... }
+  },
+  "notes": [...],
+  "meta": { "version": "0.9.0", "dnsQueries": 31, "durationMs": 180 }
+}</code></pre>
+  <p><code>status</code> is one of <code>pass</code>, <code>warn</code>, <code>fail</code> or <code>info</code>. Each finding is <code>{ "level", "message" }</code>. <code>mtaSts</code> and <code>tlsRpt</code> carry <code>"bonus": true</code>: their points are added on top of the five core checks and <code>score</code> is capped at 100 (<code>scoreBreakdown</code> shows both parts). <code>mtaSts</code> also has <code>policyUrl</code>, <code>policyFetch</code> (<code>ok</code>, <code>httpStatus</code>, <code>error</code>), <code>mxCoverage</code> (<code>covered</code>, <code>uncovered</code>) and <code>id</code>.</p>
+  <h3>Errors</h3>
+  <table class="tbl">
+    <thead><tr><th>HTTP</th><th>code</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td>400</td><td><code>invalid_domain</code> / <code>invalid_selector</code></td><td>Input failed validation</td></tr>
+      <tr><td>422</td><td><code>domain_not_found</code></td><td>Domain does not exist (NXDOMAIN)</td></tr>
+      <tr><td>401</td><td><code>invalid_api_key</code></td><td>Bearer / X-Api-Key present but unknown</td></tr>
+      <tr><td>429</td><td><code>rate_limited</code> / <code>daily_quota_exceeded</code> / <code>daily_capacity_reached</code></td><td>Too many requests (per minute, your key's daily cap, or the shared daily allowance); see <code>Retry-After</code></td></tr>
+      <tr><td>502 / 504</td><td><code>dns_unavailable</code> / <code>timeout</code></td><td>Upstream DNS failed or was too slow; retry</td></tr>
+    </tbody>
+  </table>
+  <p>Error body: <code>{ "error": { "code": "invalid_domain", "message": "…" } }</code>. Health check: <code>GET /api/health</code>.</p>
+
+  <h3 id="api-key">Free API key (higher limits)</h3>
+  <p>Anonymous use stays at about <strong>20 checks/min per IP</strong>. Sign in with Google to mint one free API key with <strong>about 120 checks/min</strong> and a cap of <strong>1,000 checks/day</strong> (UTC day). Key holders also have part of the shared daily allowance kept for them (about 8,000 checks per UTC day across all users, of which anonymous use can take at most about 5,000). Need more? See <a href="#pro">DnsGuard Pro</a> ($9/mo, about 600 checks/min and 10,000/day).</p>
+  <p>Send a free key on every request:</p>
+  <pre><code>Authorization: Bearer dg_live_…
+# or
+X-Api-Key: dg_live_…</code></pre>
+  <pre><code id="curl-key-example">curl -H "Authorization: Bearer dg_live_YOUR_KEY" \
+  "https://YOUR-HOST/api/check?domain=example.com"</code></pre>
+  <p>Pro license keys (prefix <code>DNSG</code>, issued by Polar after subscribe) use the same headers:</p>
+  <pre><code>Authorization: Bearer DNSG-…
+# or
+X-Api-Key: DNSG-…</code></pre>
+  <pre><code>curl -H "Authorization: Bearer DNSG-YOUR_LICENSE_KEY" \
+  "https://YOUR-HOST/api/check?domain=example.com"</code></pre>
+  <div id="api-key-panel" class="keypanel">
+    <p id="api-key-status" class="small">Checking whether Google sign-in is available…</p>
+    <p><a class="btn" id="google-signin" href="/api/auth/google">Continue with Google</a></p>
+    <div id="minted-key" class="minted" hidden>
+      <p><strong id="minted-key-title">Copy your free API key now</strong>. We only show it once. We store a hash, never the raw key.</p>
+      <pre><code id="minted-key-value"></code></pre>
+      <p class="small">Store it somewhere safe. You can close this banner after copying.</p>
+    </div>
+  </div>
+  <p class="small">Google sign-in uses a server-side OAuth redirect (no Google JavaScript on this page) and asks only for the <code>openid</code> and <code>email</code> scopes. Your Google email must be verified. A short-lived CSRF cookie is set only during sign-in.</p>
+  <p class="small"><strong>Lost your key?</strong> Click Continue with Google again. You'll see "You already have a free API key" with a <em>Rotate key</em> button. Rotating takes one more Google sign-in, then shows a new key and deletes the old one, which stops working within about a minute.</p>
+</section>
+
+<section id="agents" class="wrap">
+  <h2>For AI agents (MCP)</h2>
+  <p>DnsGuard is also a remote <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener noreferrer">Model Context Protocol</a> (MCP) server, so AI assistants and agents can check a domain for you. Most MCP clients accept this config; some use a different format (for example, VS Code uses a <code>servers</code> key). Clients with a settings screen just need the URL <code>https://dnsguard.mike-tusa.workers.dev/mcp</code>.</p>
+  <pre><code id="mcp-config">{
+  "mcpServers": {
+    "dnsguard": {
+      "type": "http",
+      "url": "https://dnsguard.mike-tusa.workers.dev/mcp"
+    }
+  }
+}</code></pre>
+  <p>It has one read-only tool, <code>check_domain</code> (<code>domain</code>, plus an optional <code>dkim_selector</code>), and scores exactly like the JSON API. The limits are the same too: no key is needed for light use. For higher limits, have your client send <code>Authorization: Bearer dg_live_…</code> (free key) or <code>Authorization: Bearer DNSG-…</code> (Pro). Each tool call counts as one check.</p>
+  <p class="small">Machine-readable docs: <a href="/llms.txt">llms.txt</a> · <a href="/openapi.json">OpenAPI 3.1 spec</a> · MCP endpoint <code>POST /mcp</code> (Streamable HTTP, stateless JSON responses).</p>
+</section>
+
+<section id="pro" class="wrap pro">
+  <h2>DnsGuard Pro — $9/mo</h2>
+  <p>Higher API limits for production use: about <strong>600 checks/min</strong> and <strong>10,000 checks/day</strong> (UTC) per license. After you subscribe, Polar issues a license key with prefix <code>DNSG</code>. Send it as <code>Authorization: Bearer DNSG-…</code> (or <code>X-Api-Key</code>) the same way as a free key. Responses include <code>x-dnsguard-tier: pro</code>.</p>
+  <p><a class="btn" id="pro-checkout" href="https://buy.polar.sh/polar_cl_gikZjiwyAE6uZPCem4zDUlQLJTrEMo7VHvCph3xozYN" target="_blank" rel="noopener noreferrer">Subscribe with Polar</a></p>
+  <p class="small">Polar is the merchant of record (checkout, tax, refunds). Cancel or manage billing in your Polar customer portal. DnsGuard validates Pro licenses via a shared license store written by our fleet payment gateway after Polar subscription events; we store only hashed usage counters, not the raw license key.</p>
+
+  <h3>Optional: notify me about digests</h3>
+  <p>A weekly monitoring digest (email when SPF, DKIM, DMARC or BIMI records change) and higher plans are coming later. Leave your email if you want a heads-up — not required to use Pro.</p>
+  <form id="waitlist-form" class="waitlist" novalidate>
+    <label for="wl-email" class="sr">Email</label>
+    <input id="wl-email" name="email" type="email" placeholder="you@company.com" required maxlength="254" autocomplete="email">
+    <input type="text" name="website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+    <button type="submit">Notify me</button>
+  </form>
+  <p id="waitlist-msg" class="small" role="status"></p>
+  <details id="remove" class="remove">
+    <summary>Remove my digest notify email</summary>
+    <p class="small">Enter the address you signed up with. If it's on the list, it's deleted right away. For privacy, you'll see the same message either way.</p>
+    <form id="remove-form" class="waitlist" novalidate>
+      <label for="rm-email" class="sr">Email to remove</label>
+      <input id="rm-email" name="email" type="email" placeholder="you@company.com" required maxlength="254" autocomplete="email">
+      <input type="text" name="website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+      <button type="submit">Remove my email</button>
+    </form>
+    <p id="remove-msg" class="small" role="status"></p>
+  </details>
+</section>
+
+<section id="privacy" class="wrap">
+  <h2>Privacy</h2>
+  <p class="small">Last updated: 15 October 2026 (added the daily unique-visitor count and the RapidAPI marketplace route).</p>
+  <p>A check only reads public data: DNS records, and, if the domain publishes an MTA-STS record, its public policy file at <code>https://mta-sts.&lt;domain&gt;/.well-known/mta-sts.txt</code> (that web server sees a request from Cloudflare's network, not from your IP). We look up DNS through DNS-over-HTTPS resolvers (Cloudflare <code>cloudflare-dns.com</code>, falling back to Google <code>dns.google</code>), so those providers see the names being queried. We don't store the domains you check or your IP address. The site runs on Cloudflare Workers, and Cloudflare processes requests in order to serve it. Results are held in memory for up to 2 minutes for caching, and your IP is used only in short-lived counters for rate limiting. To keep the free service within its hosting budget we also keep site-wide daily totals (plain counts of checks and waitlist requests, with no IPs, keys or domains), deleted after about 2 days.</p>
+  <p><strong>Digest notify list:</strong> if you opt in, we store only your email address and the time you signed up, in Cloudflare Workers KV. We use it only to email you about weekly monitoring digests or higher plans when they launch. We don't sell or share it, and we don't store your IP address with it. You can delete it yourself at any time with the <a href="#remove">Remove my digest notify email</a> form; removal takes effect immediately.</p>
+  <p><strong>Free API account (Google sign-in):</strong> when Google OAuth is enabled, we store your Google account id (sub), email, key id, key hash (SHA-256, never the raw key after issuance) and created time in a separate Workers KV namespace. We request only the <code>openid</code> and <code>email</code> scopes from Google (no name or profile photo). To enforce the free daily cap we also keep a <strong>per-key daily usage counter</strong>: the number of checks made with your key on each UTC day, stored in a Cloudflare Durable Object under your Google account id. Counters are deleted automatically after about 2 days. We don't store your IP address or the domains you check with any of this. A short-lived HttpOnly CSRF cookie is set only during the Google sign-in redirect and cleared afterward. You can replace a lost key yourself with <em>Rotate key</em> (see the API section). To delete your free API account data, email the contact address below.</p>
+  <p><strong>DnsGuard Pro (Polar):</strong> Pro licenses are validated via a shared license store written by our fleet payment gateway after Polar subscription events. DnsGuard stores only hashed usage counters for rate and daily limits (SHA-256 of the license key; never the raw key). Polar is the merchant of record for checkout, tax, and refunds — cancel or manage billing through Polar. Contact for DnsGuard privacy or deletion requests stays the same address below.</p>
+  <p><strong>Daily unique visitors:</strong> to count unique visitors per day, we keep a salted hash of your network address and the date (it changes every day and can't be linked back to an address without our secret key) for 9 days; no IP address, domain or key is stored with it.</p>
+  <p><strong>RapidAPI:</strong> if you use DnsGuard through the RapidAPI marketplace, RapidAPI proxies, logs and meters your requests and handles billing under its own privacy policy. DnsGuard receives your RapidAPI plan and username header and uses a hash of the username only in a short-lived per-minute counter; nothing else is stored.</p>
+  <p>No third-party analytics and no third-party scripts. We don't use cookies except the short-lived OAuth CSRF cookie during Google sign-in.</p>
+  <p><strong>Contact:</strong> questions, or a privacy or deletion request: <a href="mailto:digitalpromohub.support+dnsguard@gmail.com">digitalpromohub.support+dnsguard@gmail.com</a>.</p>
+</section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <p>DnsGuard: free email-domain health checks. Results are informational and based on public DNS at the moment of the check; they are not a guarantee of deliverability.</p>
+    <p>Contact: <a href="mailto:digitalpromohub.support+dnsguard@gmail.com">digitalpromohub.support+dnsguard@gmail.com</a></p>
+    <p class="small">Guides: <a href="/guides/spf">SPF</a> · <a href="/guides/dkim">DKIM</a> · <a href="/guides/dmarc">DMARC</a> · <a href="/guides/bimi">BIMI</a> · <a href="/guides/mta-sts">MTA-STS &amp; TLS-RPT</a></p>
+    <p class="small">Generators: <a href="/guides/spf/generator">SPF record generator</a> · <a href="/guides/dmarc/generator">DMARC record generator</a></p>
+    <p class="small">For AI agents: <a href="#agents">MCP server</a> · <a href="/llms.txt">llms.txt</a> · <a href="/openapi.json">OpenAPI</a></p>
+    <p class="small">SPF RFC 7208 · DKIM RFC 6376 · DMARC RFC 7489 · BIMI (IETF draft) · MTA-STS RFC 8461 · TLS-RPT RFC 8460</p>
+  </div>
+</footer>
+</body>
+</html>

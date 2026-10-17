@@ -1,0 +1,25 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "dev.workers.mike-tusa.dnsguard/dnsguard",
+  "title": "DnsGuard",
+  "description": "Check a domain's email authentication: SPF, DKIM, DMARC, BIMI, MX, MTA-STS, TLS-RPT. Score + fixes.",
+  "version": "0.9.0",
+  "websiteUrl": "https://dnsguard.mike-tusa.workers.dev/",
+  "icons": [
+    { "src": "https://dnsguard.mike-tusa.workers.dev/favicon.svg", "mimeType": "image/svg+xml", "sizes": ["any"] }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://dnsguard.mike-tusa.workers.dev/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Optional. 'Bearer dg_live_…' (free key, Google sign-in on the website) or 'Bearer DNSG-…' (DnsGuard Pro) for higher limits. Works without a key.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,292 @@
+// DnsGuard SPF + DMARC record generators (v0.9.0). Runs entirely in the browser: nothing typed here is sent anywhere.
+// Pure builders (buildSpf / buildDmarc) are also loaded by the offline tests via node:vm, so keep them DOM-free.
+(function (root) {
+  'use strict';
+
+  var HOST_RE = /^(?=.{1,253}$)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/;
+  var MACRO_RE = /^(?=.{1,253}$)[a-z0-9_.%{}+=-]*%\{[slodiphcrtv][0-9]*r?[.+,\/_=-]*\}[a-z0-9_.%{}+=-]*$/;
+  var EMAIL_RE = /^[^\s@<>()"',;:!]{1,64}@(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+
+  function cleanHost(s) { return String(s || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/\.+$/, ''); }
+  function splitList(s, prefix) {
+    var out = [];
+    String(s || '').split(/[\s,;]+/).forEach(function (t) {
+      t = t.trim();
+      if (!t) return;
+      if (prefix && t.toLowerCase().indexOf(prefix) === 0) t = t.slice(prefix.length);
+      if (out.indexOf(t) === -1) out.push(t);
+    });
+    return out;
+  }
+  function isHost(s) { return HOST_RE.test(s); }
+
+  function parseIp4(s) {
+    var m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\/(\d{1,2}))?$/.exec(s);
+    if (!m) return null;
+    var o = [m[1], m[2], m[3], m[4]].map(Number);
+    if (o.some(function (n, i) { return n > 255 || String(n) !== [m[1], m[2], m[3], m[4]][i]; })) return null;
+    var len = m[5] == null ? 32 : Number(m[5]);
+    if (len > 32 || (m[5] != null && String(len) !== m[5])) return null;
+    return { octets: o, len: len };
+  }
+  function isPrivate4(o) {
+    return o[0] === 10 || o[0] === 127 || (o[0] === 172 && o[1] >= 16 && o[1] <= 31) || (o[0] === 192 && o[1] === 168) || (o[0] === 169 && o[1] === 254) || o[0] === 0;
+  }
+  function parseIp6(s) {
+    var m = /^([0-9a-f:.]+)(?:\/(\d{1,3}))?$/i.exec(s);
+    if (!m) return null;
+    var len = m[2] == null ? 128 : Number(m[2]);
+    if (len > 128 || (m[2] != null && String(len) !== m[2])) return null;
+    var addr = m[1];
+    if (addr.indexOf(':') === -1) return null;
+    var parts = addr.split('::');
+    if (parts.length > 2) return null;
+    var groups = function (x) { return x === '' ? [] : x.split(':'); };
+    var head = groups(parts[0]);
+    var tail = parts.length === 2 ? groups(parts[1]) : [];
+    var all = head.concat(tail);
+    var n = 0;
+    for (var i = 0; i < all.length; i++) {
+      var g = all[i];
+      if (i === all.length - 1 && g.indexOf('.') !== -1) { if (!parseIp4(g) || g.indexOf('/') !== -1) return null; n += 2; continue; }
+      if (!/^[0-9a-f]{1,4}$/i.test(g)) return null;
+      n += 1;
+    }
+    if (parts.length === 2 ? n > 7 : n !== 8) return null;
+    return { len: len };
+  }
+
+  var QUAL = { '-': 'pass', '~': 'info', '?': 'warn', '+': 'fail' };
+
+  // opts: { domain, includes, ip4, ip6, a, mx, exists, redirect, all } (lists may be arrays or free text)
+  function buildSpf(opts) {
+    opts = opts || {};
+    var msgs = [];
+    var say = function (level, text) { msgs.push({ level: level, text: text }); };
+    var domain = cleanHost(opts.domain);
+    if (domain && !isHost(domain)) { say('fail', '"' + domain + '" doesn\u2019t look like a domain name. Use the form example.com.'); domain = ''; }
+    var list = function (v, prefix) { return Array.isArray(v) ? v.map(String) : splitList(v, prefix); };
+
+    var mech = [];
+    var ip4 = [];
+    list(opts.ip4, 'ip4:').forEach(function (t) {
+      var p = parseIp4(t);
+      if (!p) { say('fail', 'Skipped ip4 "' + t + '": not a valid IPv4 address or range (for example 203.0.113.10 or 203.0.113.0/24).'); return; }
+      if (p.len < 8) say('fail', 'ip4:' + t + ' authorizes essentially everyone (like +all), so anyone can send as you. Use your real sending IPs or a narrow range.');
+      else if (isPrivate4(p.octets)) say('warn', 'ip4:' + t + ' is a private or reserved address. Receivers only see public IPs, so it usually has no effect.');
+      if (ip4.indexOf(t) === -1) ip4.push(t);
+    });
+    var ip6 = [];
+    list(opts.ip6, 'ip6:').forEach(function (t) {
+      var p = parseIp6(t);
+      if (!p) { say('fail', 'Skipped ip6 "' + t + '": not a valid IPv6 address or range (for example 2001:db8::/32).'); return; }
+      if (p.len < 16) say('fail', 'ip6:' + t + ' authorizes essentially everyone (like +all), so anyone can send as you. Use your real sending IPs or a narrow range.');
+      var v = t.toLowerCase();
+      if (ip6.indexOf(v) === -1) ip6.push(v);
+    });
+    ip4.forEach(function (t) { mech.push('ip4:' + t); });
+    ip6.forEach(function (t) { mech.push('ip6:' + t); });
+    var lookups = 0;
+    if (opts.a) { mech.push('a'); lookups++; }
+    if (opts.mx) { mech.push('mx'); lookups++; }
+    var incs = [];
+    list(opts.includes, 'include:').forEach(function (t) {
+      var h = cleanHost(t);
+      if (!isHost(h)) { say('fail', 'Skipped include "' + t + '": not a valid domain name.'); return; }
+      if (domain && h === domain) { say('fail', 'Skipped include:' + h + ': a domain can\u2019t include its own SPF record (that\u2019s a loop).'); return; }
+      if (incs.indexOf(h) === -1) incs.push(h);
+    });
+    incs.forEach(function (h) { mech.push('include:' + h); lookups++; });
+    list(opts.exists, 'exists:').forEach(function (t) {
+      var h = t.trim().toLowerCase().replace(/\.+$/, '');
+      if (!isHost(h) && !MACRO_RE.test(h)) { say('fail', 'Skipped exists "' + t + '": not a valid domain or macro.'); return; }
+      mech.push('exists:' + h); lookups++;
+    });
+
+    var redirect = cleanHost(String(opts.redirect || '').replace(/^redirect=/i, ''));
+    if (redirect && !isHost(redirect)) { say('fail', 'Ignored redirect "' + redirect + '": not a valid domain name.'); redirect = ''; }
+    if (redirect && domain && redirect === domain) { say('fail', 'Ignored redirect=' + redirect + ': a domain can\u2019t redirect to itself.'); redirect = ''; }
+
+    var all = ['-', '~', '?', '+'].indexOf(opts.all) !== -1 ? opts.all : '-';
+    var parts = ['v=spf1'].concat(mech);
+    if (redirect) {
+      parts.push('redirect=' + redirect);
+      lookups++;
+      say('info', 'With redirect=, the all mechanism is left out: RFC 7208 says receivers ignore redirect when the record has an "all". The policy (including its all) comes from ' + redirect + '.');
+      if (mech.length) say('info', 'The mechanisms before redirect= are still checked first. Most records that use redirect= contain nothing else.');
+    } else {
+      parts.push(all + 'all');
+      if (all === '+') say('fail', '+all lets anyone on the internet send email as your domain. Never publish it; use -all or ~all.');
+      else if (all === '?') say('warn', '?all (neutral) gives almost no protection. Use ~all while you find every sender, then -all.');
+      else if (all === '~') say('info', '~all (softfail) is fine while you\u2019re still finding every sender. Switch to -all once the list is complete.');
+      else say('pass', '-all: mail from servers you didn\u2019t list fails SPF.');
+      if (!mech.length) say(all === '-' ? 'info' : 'warn', 'No senders listed: this record says the domain sends no email at all. That\u2019s right for parked domains; otherwise add the services that send for you.');
+    }
+
+    if (lookups > 10) say('fail', 'About ' + lookups + ' DNS lookups: over the limit of 10, so SPF would return permerror. Remove services you no longer use, or replace a/mx with ip4: ranges.');
+    else if (lookups >= 8) say('warn', 'About ' + lookups + ' of 10 DNS lookups before counting the includes\u2019 own lookups. You\u2019re close to the limit.');
+    else say('pass', lookups + ' of 10 DNS lookups (each include, a, mx, exists and redirect costs one).');
+    if (incs.length) say('info', 'Each include: can use more lookups inside its own record. Check the real total with DnsGuard after you publish.');
+
+    var record = parts.join(' ');
+    if (record.length > 255) say('warn', 'The record is ' + record.length + ' characters. A TXT string holds 255, so it has to be stored as several quoted strings in one record. Most DNS panels do this for you.');
+    say('info', 'Publish exactly one TXT record starting with v=spf1. If you already have one, replace it (merging any senders) rather than adding a second.');
+    return { record: record, host: domain || '', lookups: lookups, messages: msgs, ok: !msgs.some(function (m) { return m.level === 'fail'; }) };
+  }
+
+  var RANK = { none: 0, quarantine: 1, reject: 2 };
+  function sameOrg(a, b) { return a === b || a.slice(-(b.length + 1)) === '.' + b || b.slice(-(a.length + 1)) === '.' + a; }
+
+  // opts: { domain, p, sp, pct, rua, ruf, fo, adkim, aspf }
+  function buildDmarc(opts) {
+    opts = opts || {};
+    var msgs = [];
+    var say = function (level, text) { msgs.push({ level: level, text: text }); };
+    var domain = cleanHost(opts.domain).replace(/^_dmarc\./, '');
+    if (domain && !isHost(domain)) { say('fail', '"' + domain + '" doesn\u2019t look like a domain name. Use the form example.com.'); domain = ''; }
+    var p = RANK.hasOwnProperty(opts.p) ? opts.p : 'none';
+    var parts = ['v=DMARC1', 'p=' + p];
+    var sp = RANK.hasOwnProperty(opts.sp) ? opts.sp : '';
+    if (sp) {
+      parts.push('sp=' + sp);
+      if (RANK[sp] < RANK[p]) say('warn', 'sp=' + sp + ' is weaker than p=' + p + ', so subdomains are easier to spoof than your main domain.');
+    }
+    var pctRaw = opts.pct == null ? '' : String(opts.pct).trim();
+    if (pctRaw !== '' && pctRaw !== '100') {
+      if (!/^\d{1,3}$/.test(pctRaw) || Number(pctRaw) > 100) say('fail', 'Ignored pct "' + pctRaw + '": use a whole number from 0 to 100.');
+      else {
+        parts.push('pct=' + Number(pctRaw));
+        if (p === 'none') say('info', 'pct has no effect with p=none. It\u2019s for rolling out quarantine or reject gradually.');
+        else say('info', 'pct=' + Number(pctRaw) + ': the policy applies to ' + Number(pctRaw) + '% of failing mail. Raise it to 100 (or remove it) once reports look clean.');
+      }
+    }
+    var auth = [];
+    var uris = function (v, tag) {
+      var out = [];
+      (Array.isArray(v) ? v : splitList(v)).forEach(function (t) {
+        var e = String(t).trim().replace(/^mailto:/i, '').toLowerCase();
+        if (!EMAIL_RE.test(e)) { say('fail', 'Skipped ' + tag + ' "' + t + '": not a valid email address.'); return; }
+        if (out.indexOf(e) !== -1) return;
+        out.push(e);
+        var rd = e.slice(e.lastIndexOf('@') + 1);
+        if (domain && !sameOrg(rd, domain)) {
+          var name = domain + '._report._dmarc.' + rd;
+          if (!auth.some(function (x) { return x.name === name; })) auth.push({ name: name, value: 'v=DMARC1' });
+        }
+      });
+      return out;
+    };
+    var rua = uris(opts.rua, 'rua');
+    var ruf = uris(opts.ruf, 'ruf');
+    if (rua.length) parts.push('rua=' + rua.map(function (e) { return 'mailto:' + e; }).join(','));
+    if (ruf.length) {
+      parts.push('ruf=' + ruf.map(function (e) { return 'mailto:' + e; }).join(','));
+      var fo = ['1', 'd', 's'].indexOf(opts.fo) !== -1 ? opts.fo : '';
+      if (fo) parts.push('fo=' + fo);
+      say('info', 'Few receivers send ruf failure reports, and the ones that do can include parts of the original messages. Use an address you control.');
+    }
+    if (opts.adkim === 's') { parts.push('adkim=s'); say('info', 'adkim=s (strict): the DKIM d= domain must match the From domain exactly; mail signed by a subdomain will fail.'); }
+    if (opts.aspf === 's') { parts.push('aspf=s'); say('info', 'aspf=s (strict): the SPF domain must match the From domain exactly; a bounce subdomain will fail.'); }
+    if (auth.length) say('warn', 'Reports go to another domain. That domain must publish an authorization record, or receivers won\u2019t send reports to it (report services usually do this for you): ' + auth.map(function (x) { return x.name + ' TXT "v=DMARC1"'; }).join('; ') + '.');
+
+    if (p === 'none') {
+      say('warn', 'p=none only monitors: it doesn\u2019t stop anyone spoofing your domain. It\u2019s the safe first step; move to quarantine and then reject once reports are clean.');
+      if (!rua.length) say('warn', 'Add a rua address. Without reports you can\u2019t tell when it\u2019s safe to tighten the policy.');
+    } else if (p === 'quarantine') {
+      say('pass', 'p=quarantine: failing mail goes to spam. Next step: p=reject once reports stay clean.');
+      if (!rua.length) say('info', 'Consider a rua address so you keep seeing who sends as your domain.');
+    } else {
+      say('pass', 'p=reject: failing mail is refused. This is the goal for most domains.');
+      if (!rua.length) say('info', 'Consider a rua address so you notice if a legitimate sender starts failing.');
+    }
+    say('info', 'Publish exactly one TXT record at _dmarc. If you already have one, replace it.');
+    return { record: parts.join('; '), host: '_dmarc.' + (domain || 'example.com'), domain: domain, authRecords: auth, messages: msgs, ok: !msgs.some(function (m) { return m.level === 'fail'; }) };
+  }
+
+  var api = { buildSpf: buildSpf, buildDmarc: buildDmarc, parseIp4: parseIp4, parseIp6: parseIp6 };
+  if (typeof document === 'undefined') { root.DnsGuardGen = api; return; }
+
+  // ---------- DOM wiring (only on the generator pages) ----------
+  var $ = function (id) { return document.getElementById(id); };
+  var val = function (id) { var n = $(id); return n ? n.value : ''; };
+  var checked = function (id) { var n = $(id); return !!(n && n.checked); };
+  function renderMsgs(ul, msgs) {
+    while (ul.firstChild) ul.removeChild(ul.firstChild);
+    msgs.forEach(function (m) { var li = document.createElement('li'); li.className = 'l-' + m.level; li.textContent = m.text; ul.appendChild(li); });
+  }
+  function wireCopy(btnId, srcId, noteId) {
+    var b = $(btnId);
+    if (!b) return;
+    b.addEventListener('click', function () {
+      var text = $(srcId).textContent;
+      var note = $(noteId);
+      var fallback = function () {
+        var r = document.createRange(); r.selectNodeContents($(srcId));
+        var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+        note.textContent = 'Selected. Press Ctrl+C (or \u2318C) to copy.';
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { note.textContent = 'Copied.'; }, fallback);
+      } else fallback();
+    });
+  }
+  function checkLink(id, domain) {
+    var a = $(id);
+    if (!a) return;
+    a.href = domain ? '/?domain=' + encodeURIComponent(domain) : '/';
+  }
+  var q = new URLSearchParams(location.search).get('domain');
+
+  if ($('spf-gen')) {
+    if (q && $('spf-domain')) $('spf-domain').value = q.slice(0, 253);
+    var spf = function () {
+      var redirect = val('spf-redirect').trim();
+      $('spf-all').disabled = !!redirect;
+      var r = buildSpf({
+        domain: val('spf-domain'), includes: val('spf-include'), ip4: val('spf-ip4'), ip6: val('spf-ip6'),
+        a: checked('spf-a'), mx: checked('spf-mx'), exists: val('spf-exists'), redirect: redirect, all: val('spf-all'),
+      });
+      $('spf-out').textContent = r.record;
+      $('spf-host').textContent = r.host || 'your domain (@)';
+      var c = $('spf-lookups');
+      c.textContent = r.lookups + ' / 10';
+      c.className = 'count ' + (r.lookups > 10 ? 'c-fail' : r.lookups >= 8 ? 'c-warn' : 'c-pass');
+      renderMsgs($('spf-msgs'), r.messages);
+      checkLink('spf-check', r.host);
+    };
+    Array.prototype.forEach.call(document.querySelectorAll('#spf-gen input, #spf-gen textarea, #spf-gen select'), function (n) {
+      n.addEventListener('input', spf); n.addEventListener('change', spf);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#spf-gen [data-include]'), function (b) {
+      b.addEventListener('click', function () {
+        var t = $('spf-include');
+        var cur = splitList(t.value, 'include:');
+        var add = b.getAttribute('data-include');
+        if (cur.indexOf(add) === -1) cur.push(add);
+        t.value = cur.join('\n');
+        spf();
+      });
+    });
+    wireCopy('spf-copy', 'spf-out', 'spf-copied');
+    spf();
+  }
+
+  if ($('dmarc-gen')) {
+    if (q && $('dmarc-domain')) $('dmarc-domain').value = q.slice(0, 253);
+    var dmarc = function () {
+      var r = buildDmarc({
+        domain: val('dmarc-domain'), p: val('dmarc-p'), sp: val('dmarc-sp'), pct: val('dmarc-pct'),
+        rua: val('dmarc-rua'), ruf: val('dmarc-ruf'), fo: val('dmarc-fo'), adkim: val('dmarc-adkim'), aspf: val('dmarc-aspf'),
+      });
+      $('dmarc-out').textContent = r.record;
+      $('dmarc-host').textContent = r.host;
+      renderMsgs($('dmarc-msgs'), r.messages);
+      checkLink('dmarc-check', r.domain);
+    };
+    Array.prototype.forEach.call(document.querySelectorAll('#dmarc-gen input, #dmarc-gen select'), function (n) {
+      n.addEventListener('input', dmarc); n.addEventListener('change', dmarc);
+    });
+    wireCopy('dmarc-copy', 'dmarc-out', 'dmarc-copied');
+    dmarc();
+  }
+})(typeof globalThis !== 'undefined' ? globalThis : this);
