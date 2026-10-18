@@ -1,9 +1,9 @@
 /**
  * v0.8.0 RapidAPI gate for /rapidapi/* (pattern: MeetZone src/index.ts, hardened: constant-time compare, 503 when unset).
- * RapidAPI's proxy adds X-RapidAPI-Proxy-Secret (must equal the Worker secret RAPIDAPI_PROXY_SECRET),
- * X-RapidAPI-Subscription (BASIC/PRO) and X-RapidAPI-User. Monthly quotas + per-minute plan limits are enforced by RapidAPI;
- * the Worker adds only a generous per-user burst guard (RAPIDAPI_LIMITER, namespace 7305, keyspace "rapidapi:").
- * /api/*, /mcp and Polar DNSG- keys are untouched.
+ * RapidAPI's proxy adds X-RapidAPI-Proxy-Secret (must equal the Worker secret RAPIDAPI_PROXY_SECRET), X-RapidAPI-Subscription
+ * (BASIC/PRO) and X-RapidAPI-User. Monthly quotas + per-minute plan limits are enforced by RapidAPI; the Worker adds only a
+ * generous per-user burst guard (RAPIDAPI_LIMITER, namespace, keyspace "rapidapi:"). /api/*, /mcp and Polar DNSG- keys are
+ * untouched.
  */
 export const RAPIDAPI_PREFIX = '/rapidapi';
 export const RAPIDAPI_BURST_PER_MIN = 120; // = wrangler.toml RAPIDAPI_LIMITER simple.limit; 2x the PRO plan's 60/min
