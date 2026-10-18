@@ -1,7 +1,6 @@
 /**
  * Agent-discovery documents (since v0.7.0): /llms.txt (llmstxt.org format) and /openapi.json (OpenAPI 3.1).
  * Generated from code constants so limits / versions / URLs can't drift from what the Worker enforces.
- * test/agent.test.js checks the spec against the real router (paths, headers, error codes).
  */
 import { VERSION } from './check.js';
 import { PRO_CHECKOUT_URL, PRO_PRICE } from './pro.js';
