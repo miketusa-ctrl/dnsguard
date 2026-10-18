@@ -106,7 +106,7 @@ async function rateLimited(env, ip, bucket, limit) {
   const binding = bucket === 'waitlist' ? env.WAITLIST_LIMITER
     : bucket === 'key' ? env.KEY_CHECK_LIMITER
     : bucket === 'pro' ? env.PRO_CHECK_LIMITER
-    : bucket === 'rapidapi' ? env.RAPIDAPI_LIMITER // own namespace (7305): never eats the anonymous IP pool
+    : bucket === 'rapidapi' ? env.RAPIDAPI_LIMITER // own namespace: never eats the anonymous IP pool
     : env.CHECK_LIMITER; // join + remove share one bucket
   if (binding && typeof binding.limit === 'function') {
     try { const { success } = await binding.limit({ key: `${bucket}:${ip}` }); return !success; } catch { /* fall through */ }
