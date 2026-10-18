@@ -5,11 +5,11 @@
   "description": "Free email-domain health checker (SPF, DKIM, DMARC, BIMI, MX, MTA-STS, TLS-RPT) with a JSON API and a remote MCP server",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "dev": "npx wrangler@4 dev",
+    "deploy": "npx wrangler@4 deploy"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "license": "MIT"
 }
